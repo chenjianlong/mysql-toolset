@@ -140,8 +140,6 @@ func main() {
 			panic(err)
 		}
 
-		fmt.Printf("----------------------EVENT-------------------\n")
-		fmt.Printf("header: %s\npostHeader: %s\npayload: %s\n",
-			event.GetHeader(), event.GetPostHeader(), event.GetPayload())
+		PrintEvent(os.Stdout, event)
 	}
 }

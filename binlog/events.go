@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 // log event type, from libbinlogevents/include/binlog_event.h
@@ -169,9 +170,15 @@ type BinLogEventHeader struct {
 	Flags     uint16
 }
 
-func (header *BinLogEventHeader) String() string {
-	return fmt.Sprintf("{ timestamp: %d, eventType: %v, serverId: %d, eventSize: %d, logPos: %d, flags: %d }",
-		header.Timestamp, header.EventType, header.ServerId, header.EventSize, header.LogPos, header.Flags)
+func (header *BinLogEventHeader) Desc() []string {
+	return []string{
+		fmt.Sprintf("timestamp: %d", header.Timestamp),
+		fmt.Sprintf("event_type: %v", header.EventType),
+		fmt.Sprintf("server_id: %d", header.ServerId),
+		fmt.Sprintf("event_size: %d", header.EventSize),
+		fmt.Sprintf("log_pos: %d", header.LogPos),
+		fmt.Sprintf("flags: %d", header.Flags),
+	}
 }
 
 func NewBinLogEventHeader(text []byte) (*BinLogEventHeader, error) {
@@ -186,25 +193,25 @@ func NewBinLogEventHeader(text []byte) (*BinLogEventHeader, error) {
 }
 
 type BinLogEvent interface {
-	GetHeader() string
-	GetPostHeader() string
-	GetPayload() string
+	GetHeader() []string
+	GetPostHeader() []string
+	GetPayload() []string
 }
 
 type UnknownBinLogEvent struct {
 	header *BinLogEventHeader
 }
 
-func (event *UnknownBinLogEvent) GetHeader() string {
-	return event.header.String()
+func (event *UnknownBinLogEvent) GetHeader() []string {
+	return event.header.Desc()
 }
 
-func (event *UnknownBinLogEvent) GetPostHeader() string {
-	return "(empty)"
+func (event *UnknownBinLogEvent) GetPostHeader() []string {
+	return nil
 }
 
-func (event *UnknownBinLogEvent) GetPayload() string {
-	return "(empty)"
+func (event *UnknownBinLogEvent) GetPayload() []string {
+	return nil
 }
 
 type FormatDescriptionEventPayload struct {
@@ -215,13 +222,14 @@ type FormatDescriptionEventPayload struct {
 	EventTypeHeaderLength []byte // a array indexed by Binlog Event Type - 1 to extract the length of the event specific header
 }
 
-func (payload *FormatDescriptionEventPayload) String() string {
-	return fmt.Sprintf(
-		"{ binlog_version: %d, mysql_server_version: %s,"+
-			" create_timestamp: %d, event_header_length: %d, event_type_header_length: %v }",
-		payload.BinlogVersion, payload.MySQLServerVersion,
-		payload.CreateTimestamp, payload.EventHeaderLength,
-		payload.EventTypeHeaderLength)
+func (payload *FormatDescriptionEventPayload) Desc() []string {
+	return []string{
+		fmt.Sprintf("binlog_version: %d", payload.BinlogVersion),
+		fmt.Sprintf("mysql_server_version: %s", payload.MySQLServerVersion),
+		fmt.Sprintf("create_timestamp: %d", payload.CreateTimestamp),
+		fmt.Sprintf("event_header_length: %d", payload.EventHeaderLength),
+		fmt.Sprintf("event_type_header_length: %v", payload.EventTypeHeaderLength),
+	}
 }
 
 type FormatDescriptionEvent struct {
@@ -229,16 +237,16 @@ type FormatDescriptionEvent struct {
 	payload *FormatDescriptionEventPayload
 }
 
-func (event *FormatDescriptionEvent) GetHeader() string {
-	return event.header.String()
+func (event *FormatDescriptionEvent) GetHeader() []string {
+	return event.header.Desc()
 }
 
-func (event *FormatDescriptionEvent) GetPostHeader() string {
-	return "(empty)"
+func (event *FormatDescriptionEvent) GetPostHeader() []string {
+	return nil
 }
 
-func (event *FormatDescriptionEvent) GetPayload() string {
-	return event.payload.String()
+func (event *FormatDescriptionEvent) GetPayload() []string {
+	return event.payload.Desc()
 }
 
 func newFormatDescriptionEventPayload(
@@ -288,5 +296,29 @@ func NewBinLogEvent(header *BinLogEventHeader, text []byte) BinLogEvent {
 		return &FormatDescriptionEvent{header, payload}
 	default:
 		return &UnknownBinLogEvent{header}
+	}
+}
+
+func PrintEvent(w io.Writer, e BinLogEvent) {
+	fmt.Fprintf(w, "----------------------EVENT-------------------\n")
+	if header := e.GetHeader(); header != nil {
+		fmt.Fprintf(w, "HEADER\n")
+		for _, val := range header {
+			fmt.Fprintf(w, "	%s\n", val)
+		}
+	}
+
+	if postHeader := e.GetPostHeader(); postHeader != nil {
+		fmt.Fprintf(w, "POST_HEADER\n")
+		for _, val := range postHeader {
+			fmt.Fprintf(w, "	%s\n", val)
+		}
+	}
+
+	if payload := e.GetPayload(); payload != nil {
+		fmt.Fprintf(w, "PAYLOAD\n")
+		for _, val := range payload {
+			fmt.Fprintf(w, "	%s\n", val)
+		}
 	}
 }
