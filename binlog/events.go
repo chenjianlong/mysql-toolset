@@ -3,7 +3,7 @@
 // Copyright (C) 2019 Jianlong Chen <jianlong99@gmail.com>
 //
 
-package main
+package binlog
 
 import (
 	"bytes"
