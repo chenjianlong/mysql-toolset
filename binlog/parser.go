@@ -53,7 +53,7 @@ func (self *Parser) ReadEvent() (BinLogEvent, error) {
 		}
 	}
 
-	return NewBinLogEvent(header, self.text), nil
+	return NewBinLogEvent(header, self.text)
 }
 
 func (self *Parser) SkipEvent() error {

@@ -285,17 +285,56 @@ func newFormatDescriptionEventPayload(
 	return payload, err
 }
 
-func NewBinLogEvent(header *BinLogEventHeader, text []byte) BinLogEvent {
+type XidEvent struct {
+	header *BinLogEventHeader
+	xid    uint64
+}
+
+func (event *XidEvent) GetHeader() []string {
+	return event.header.Desc()
+}
+
+func (event *XidEvent) GetPostHeader() []string {
+	return nil
+}
+
+func (event *XidEvent) GetPayload() []string {
+	return []string{
+		fmt.Sprintf("xid: %d", event.xid),
+	}
+}
+
+func newXidEventPayload(header *BinLogEventHeader, text []byte) (uint64, error) {
+
+	size := header.EventSize - BINLOG_EVENT_HEADER_LEN
+	if size != uint32(len(text)) {
+		panic("Invalid XidEventPayload len")
+	}
+
+	r := bytes.NewReader(text)
+	var xid uint64
+	err := binary.Read(r, binary.LittleEndian, &xid)
+	return xid, err
+}
+
+func NewBinLogEvent(header *BinLogEventHeader, text []byte) (BinLogEvent, error) {
 	switch header.EventType {
 	case FORMAT_DESCRIPTION_EVENT:
 		payload, err := newFormatDescriptionEventPayload(header, text)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 
-		return &FormatDescriptionEvent{header, payload}
+		return &FormatDescriptionEvent{header, payload}, nil
+	case XID_EVENT:
+		xid, err := newXidEventPayload(header, text)
+		if err != nil {
+			return nil, err
+		}
+
+		return &XidEvent{header, xid}, nil
 	default:
-		return &UnknownBinLogEvent{header}
+		return &UnknownBinLogEvent{header}, nil
 	}
 }
 
