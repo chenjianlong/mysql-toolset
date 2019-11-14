@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/go-version"
 	"io"
 	"strings"
+	"time"
 )
 
 type Any interface{}
@@ -188,7 +189,7 @@ type BinLogEventHeader struct {
 
 func (header *BinLogEventHeader) Desc() []string {
 	return []string{
-		fmt.Sprintf("timestamp: %d", header.Timestamp),
+		fmt.Sprintf("timestamp: %d (%v)", header.Timestamp, time.Unix(int64(header.Timestamp), 0)),
 		fmt.Sprintf("event_type: %v", header.EventType),
 		fmt.Sprintf("server_id: %d", header.ServerId),
 		fmt.Sprintf("event_size: %d", header.EventSize),
