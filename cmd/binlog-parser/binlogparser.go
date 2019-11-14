@@ -9,7 +9,7 @@ package main
 
 import (
 	"github.com/alexflint/go-arg"
-	"github.com/chenjianlong/mysql-toolset/binlog"
+	. "github.com/chenjianlong/mysql-toolset/binlog"
 	"io"
 	"os"
 )
@@ -29,7 +29,7 @@ func main() {
 
 	defer file.Close()
 
-	parser, err := binlog.NewParser(file)
+	parser, err := NewParser(file)
 	if err != nil {
 		panic(err)
 	}
@@ -50,6 +50,6 @@ func main() {
 			panic(err)
 		}
 
-		binlog.PrintEvent(os.Stdout, event)
+		PrintEvent(os.Stdout, event)
 	}
 }

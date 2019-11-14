@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/hashicorp/go-version"
 	"io"
 	"strings"
 )
@@ -88,9 +89,19 @@ const (
 	PARTIAL_UPDATE_ROWS_EVENT LogEventType = 39
 )
 
+type BinlogChecksumAlg uint8
+
+const (
+	BINLOG_CHECKSUM_ALG_OFF   BinlogChecksumAlg = 0
+	BINLOG_CHECKSUM_ALG_CRC32 BinlogChecksumAlg = 1
+	BINLOG_CHECKSUM_ALG_END   BinlogChecksumAlg = 2
+)
+
 const (
 	BINLOG_EVENT_HEADER_LEN     = 19
 	QUERY_EVENT_POST_HEADER_LEN = 13
+	BINLOG_CHECKSUM_LEN         = 4
+	BINLOG_CHECKSUM_ALG_LEN     = 1
 )
 
 func (self LogEventType) String() string {
@@ -238,8 +249,9 @@ func (payload *FormatDescriptionEventPayload) Desc() []string {
 }
 
 type FormatDescriptionEvent struct {
-	header  *BinLogEventHeader
-	payload *FormatDescriptionEventPayload
+	header      *BinLogEventHeader
+	payload     *FormatDescriptionEventPayload
+	ChecksumAlg BinlogChecksumAlg
 }
 
 func (event *FormatDescriptionEvent) GetHeader() []string {
@@ -255,7 +267,7 @@ func (event *FormatDescriptionEvent) GetPayload() []string {
 }
 
 func newFormatDescriptionEventPayload(
-	header *BinLogEventHeader, text []byte) (*FormatDescriptionEventPayload, error) {
+	header *BinLogEventHeader, text []byte) (*FormatDescriptionEventPayload, BinlogChecksumAlg, error) {
 
 	size := header.EventSize - BINLOG_EVENT_HEADER_LEN
 	if size != uint32(len(text)) {
@@ -264,15 +276,14 @@ func newFormatDescriptionEventPayload(
 
 	r := bytes.NewReader(text)
 	payload := new(FormatDescriptionEventPayload)
-	payload.EventTypeHeaderLength = make([]byte, size-(2+50+4+1))
 	err := binary.Read(r, binary.LittleEndian, payload.BinlogVersion)
 	if err != nil {
-		return nil, err
+		return nil, BINLOG_CHECKSUM_ALG_OFF, err
 	}
 
 	sversion := make([]byte, 50)
 	if err = binary.Read(r, binary.LittleEndian, sversion); err != nil {
-		return nil, err
+		return nil, BINLOG_CHECKSUM_ALG_OFF, err
 	}
 
 	for i := 0; i < 50; i++ {
@@ -282,19 +293,47 @@ func newFormatDescriptionEventPayload(
 		}
 	}
 
+	if len(payload.MySQLServerVersion) == 0 {
+		payload.MySQLServerVersion = string(sversion)
+	}
+
 	if err = binary.Read(r, binary.LittleEndian, (*payload).CreateTimestamp); err != nil {
-		return nil, err
+		return nil, BINLOG_CHECKSUM_ALG_OFF, err
 	}
 
 	if err = binary.Read(r, binary.LittleEndian, payload.EventHeaderLength); err != nil {
-		return nil, err
+		return nil, BINLOG_CHECKSUM_ALG_OFF, err
 	}
 
+	alg := BINLOG_CHECKSUM_ALG_OFF
+	if version.Must(version.NewVersion(payload.MySQLServerVersion)).GreaterThanOrEqual(
+		version.Must(version.NewVersion("5.6.1"))) {
+
+		alg = BinlogChecksumAlg(text[len(text)-BINLOG_CHECKSUM_LEN-BINLOG_CHECKSUM_ALG_LEN])
+		if alg >= BINLOG_CHECKSUM_ALG_END {
+			panic("Invalid checksum algorithm")
+		}
+
+		size -= (BINLOG_CHECKSUM_LEN + BINLOG_CHECKSUM_ALG_LEN)
+	}
+
+	payload.EventTypeHeaderLength = make([]byte, size-(2+50+4+1))
 	if err = binary.Read(r, binary.LittleEndian, payload.EventTypeHeaderLength); err != nil {
+		return nil, alg, err
+	}
+
+	return payload, alg, err
+}
+
+func newFormatDescriptionEvent(header *BinLogEventHeader,
+	text []byte) (*FormatDescriptionEvent, error) {
+
+	payload, alg, err := newFormatDescriptionEventPayload(header, text)
+	if err != nil {
 		return nil, err
 	}
 
-	return payload, err
+	return &FormatDescriptionEvent{header, payload, alg}, nil
 }
 
 type XidEvent struct {
@@ -618,11 +657,6 @@ type QueryEventPayload struct {
 func newQueryEventPayload(header *BinLogEventHeader,
 	postHeader *QueryEventPostHeader, text []byte) (payload *QueryEventPayload, err error) {
 
-	size := header.EventSize - BINLOG_EVENT_HEADER_LEN - QUERY_EVENT_POST_HEADER_LEN
-	if size != uint32(len(text)) {
-		panic("Invalid QueryEventPayload len")
-	}
-
 	payload = new(QueryEventPayload)
 	payload.StatusVars = make(map[QStatusKey]Any)
 	r := bytes.NewReader(text)
@@ -771,7 +805,7 @@ func newQueryEventPayload(header *BinLogEventHeader,
 		return
 	}
 
-	querySize := size - uint32(postHeader.StatusVarsLength) - uint32(postHeader.SchemaLength) - 1
+	querySize := len(text) - int(postHeader.StatusVarsLength) - int(postHeader.SchemaLength) - 1
 	payload.Query = make([]byte, querySize)
 	err = binary.Read(r, binary.LittleEndian, &payload.Query)
 	return
@@ -808,13 +842,26 @@ func (self *QueryEvent) GetPayload() []string {
 	return ret
 }
 
-func newQueryEvent(header *BinLogEventHeader, text []byte) (*QueryEvent, error) {
+func newQueryEvent(header *BinLogEventHeader,
+	text []byte, fde *FormatDescriptionEvent) (*QueryEvent, error) {
+
+	size := header.EventSize - BINLOG_EVENT_HEADER_LEN
+	if size != uint32(len(text)) {
+		panic("Invalid QueryEvent")
+	}
+
 	postHeader, err := newQueryEventPostHeader(text[:QUERY_EVENT_POST_HEADER_LEN])
 	if err != nil {
 		return nil, err
 	}
 
-	payload, err := newQueryEventPayload(header, postHeader, text[QUERY_EVENT_POST_HEADER_LEN:])
+	end := len(text)
+	if fde.ChecksumAlg == BINLOG_CHECKSUM_ALG_CRC32 {
+		end -= BINLOG_CHECKSUM_LEN
+	}
+
+	fmt.Printf("eventsize=%d, size=%d, end=%d\n", header.EventSize, size, end)
+	payload, err := newQueryEventPayload(header, postHeader, text[QUERY_EVENT_POST_HEADER_LEN:end])
 	if err != nil {
 		return nil, err
 	}
@@ -822,15 +869,56 @@ func newQueryEvent(header *BinLogEventHeader, text []byte) (*QueryEvent, error) 
 	return &QueryEvent{header, postHeader, payload}, nil
 }
 
-func NewBinLogEvent(header *BinLogEventHeader, text []byte) (BinLogEvent, error) {
+type PreviousGtidsLogEvent struct {
+	header  *BinLogEventHeader
+	payload []byte
+}
+
+func (self *PreviousGtidsLogEvent) GetHeader() []string {
+	return self.header.Desc()
+}
+
+func (self *PreviousGtidsLogEvent) GetPostHeader() []string {
+	return nil
+}
+
+func (self *PreviousGtidsLogEvent) GetPayload() []string {
+	return []string{
+		fmt.Sprintf("\n%s", hex.Dump(self.payload)),
+	}
+}
+
+func newPreviousGtidsLogEvent(header *BinLogEventHeader, text []byte,
+	fde *FormatDescriptionEvent) (*PreviousGtidsLogEvent, error) {
+
+	size := len(text)
+	if fde.ChecksumAlg == BINLOG_CHECKSUM_ALG_CRC32 {
+		size -= BINLOG_CHECKSUM_LEN
+	}
+
+	event := new(PreviousGtidsLogEvent)
+	event.header = header
+	event.payload = make([]byte, size)
+	r := bytes.NewReader(text)
+	if err := binary.Read(r, binary.LittleEndian, &event.payload); err != nil {
+		return nil, err
+	}
+
+	return event, nil
+}
+
+func NewBinLogEvent(header *BinLogEventHeader,
+	text []byte, fde *FormatDescriptionEvent) (BinLogEvent, error) {
+
 	switch header.EventType {
 	case FORMAT_DESCRIPTION_EVENT:
-		payload, err := newFormatDescriptionEventPayload(header, text)
+		ev, err := newFormatDescriptionEvent(header, text)
 		if err != nil {
 			return nil, err
 		}
 
-		return &FormatDescriptionEvent{header, payload}, nil
+		fde.ChecksumAlg = ev.ChecksumAlg
+		return ev, nil
 	case XID_EVENT:
 		xid, err := newXidEventPayload(header, text)
 		if err != nil {
@@ -839,7 +927,9 @@ func NewBinLogEvent(header *BinLogEventHeader, text []byte) (BinLogEvent, error)
 
 		return &XidEvent{header, xid}, nil
 	case QUERY_EVENT:
-		return newQueryEvent(header, text)
+		return newQueryEvent(header, text, fde)
+	case PREVIOUS_GTIDS_LOG_EVENT:
+		return newPreviousGtidsLogEvent(header, text, fde)
 	default:
 		return &UnknownBinLogEvent{header}, nil
 	}

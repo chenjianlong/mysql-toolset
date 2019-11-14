@@ -13,6 +13,7 @@ import (
 type Parser struct {
 	file *os.File
 	text []byte
+	fde  *FormatDescriptionEvent
 }
 
 func (self *Parser) readEventHeader() (*BinLogEventHeader, error) {
@@ -30,6 +31,10 @@ func (self *Parser) readEventHeader() (*BinLogEventHeader, error) {
 }
 
 func (self *Parser) ReadEvent() (BinLogEvent, error) {
+	if self.fde == nil {
+		self.fde = new(FormatDescriptionEvent)
+	}
+
 	header, err := self.readEventHeader()
 	if err != nil {
 		return nil, err
@@ -53,10 +58,15 @@ func (self *Parser) ReadEvent() (BinLogEvent, error) {
 		}
 	}
 
-	return NewBinLogEvent(header, self.text)
+	return NewBinLogEvent(header, self.text, self.fde)
 }
 
 func (self *Parser) SkipEvent() error {
+	if self.fde == nil {
+		_, err := self.ReadEvent()
+		return err
+	}
+
 	header, err := self.readEventHeader()
 	if err != nil {
 		return err
@@ -90,5 +100,6 @@ func NewParser(file *os.File) (*Parser, error) {
 	parser := new(Parser)
 	parser.file = file
 	parser.text = text
+	parser.fde = nil
 	return parser, nil
 }
