@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-version"
 	"io"
 	"strings"
@@ -870,9 +871,16 @@ func newQueryEvent(header *BinLogEventHeader,
 	return &QueryEvent{header, postHeader, payload}, nil
 }
 
+type GTIDSet struct {
+	Gtid     uuid.UUID
+	Interval uint64
+	From     uint64
+	To       uint64
+}
+
 type PreviousGtidsLogEvent struct {
-	header  *BinLogEventHeader
-	payload []byte
+	header   *BinLogEventHeader
+	gtidSets []GTIDSet
 }
 
 func (self *PreviousGtidsLogEvent) GetHeader() []string {
@@ -884,9 +892,14 @@ func (self *PreviousGtidsLogEvent) GetPostHeader() []string {
 }
 
 func (self *PreviousGtidsLogEvent) GetPayload() []string {
-	return []string{
-		fmt.Sprintf("\n%s", hex.Dump(self.payload)),
+	var val []string
+	val = append(val, "gtid_sets:")
+	for _, gtidset := range self.gtidSets {
+		val = append(val, fmt.Sprintf("	%v:%d-%d, interval=%d",
+			gtidset.Gtid, gtidset.From, gtidset.To, gtidset.Interval))
 	}
+
+	return val
 }
 
 func newPreviousGtidsLogEvent(header *BinLogEventHeader, text []byte,
@@ -897,11 +910,16 @@ func newPreviousGtidsLogEvent(header *BinLogEventHeader, text []byte,
 		size -= BINLOG_CHECKSUM_LEN
 	}
 
+	var count uint64
+	r := bytes.NewReader(text)
+	if err := binary.Read(r, binary.LittleEndian, &count); err != nil {
+		return nil, err
+	}
+
 	event := new(PreviousGtidsLogEvent)
 	event.header = header
-	event.payload = make([]byte, size)
-	r := bytes.NewReader(text)
-	if err := binary.Read(r, binary.LittleEndian, &event.payload); err != nil {
+	event.gtidSets = make([]GTIDSet, count)
+	if err := binary.Read(r, binary.LittleEndian, &event.gtidSets); err != nil {
 		return nil, err
 	}
 
