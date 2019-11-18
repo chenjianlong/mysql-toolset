@@ -756,6 +756,53 @@ func newPreviousGtidsLogEvent(header *BinLogEventHeader, text []byte,
 	return event, nil
 }
 
+type RotateEvent struct {
+	header     *BinLogEventHeader
+	position   uint64
+	nextBinlog string
+}
+
+func (self *RotateEvent) GetHeader() []string {
+	return self.header.Desc()
+}
+
+func (self *RotateEvent) GetPostHeader() []string {
+	return []string{
+		fmt.Sprintf("position: %d", self.position),
+	}
+}
+
+func (self *RotateEvent) GetPayload() []string {
+	return []string{
+		fmt.Sprintf("next_binlog: %s", self.nextBinlog),
+	}
+}
+
+func newRotateEvent(header *BinLogEventHeader, text []byte,
+	fde *FormatDescriptionEvent) (*RotateEvent, error) {
+
+	// 8 for position
+	size := len(text) - 8
+	if fde.ChecksumAlg == BINLOG_CHECKSUM_ALG_CRC32 {
+		size -= BINLOG_CHECKSUM_LEN
+	}
+
+	r := bytes.NewReader(text)
+	event := new(RotateEvent)
+	event.header = header
+	if err := binary.Read(r, binary.LittleEndian, &event.position); err != nil {
+		return nil, err
+	}
+
+	var filename []byte = make([]byte, size)
+	if err := binary.Read(r, binary.LittleEndian, filename); err != nil {
+		return nil, err
+	}
+
+	event.nextBinlog = string(filename)
+	return event, nil
+}
+
 func NewBinLogEvent(header *BinLogEventHeader,
 	text []byte, fde *FormatDescriptionEvent) (BinLogEvent, error) {
 
@@ -779,6 +826,8 @@ func NewBinLogEvent(header *BinLogEventHeader,
 		return newQueryEvent(header, text, fde)
 	case PREVIOUS_GTIDS_LOG_EVENT:
 		return newPreviousGtidsLogEvent(header, text, fde)
+	case ROTATE_EVENT:
+		return newRotateEvent(header, text, fde)
 	default:
 		return &UnknownBinLogEvent{header}, nil
 	}
